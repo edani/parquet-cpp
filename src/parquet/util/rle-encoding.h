@@ -115,6 +115,10 @@ class RleDecoder {
   template <typename T>
   int GetBatch(T* values, int batch_size);
 
+  /// Skips a batch of values.  Returns the number of decoded elements.
+  template <typename T>
+  int SkipBatch(int batch_size);
+
   /// Like GetBatch but the values are then decoded using the provided dictionary
   template <typename T>
   int GetBatchWithDict(const Vector<T>& dictionary, T* values, int batch_size);
@@ -295,6 +299,33 @@ inline int RleDecoder::GetBatch(T* values, int batch_size) {
           std::min(batch_size - values_read, static_cast<int>(literal_count_));
       int actual_read =
           bit_reader_.GetBatch(bit_width_, values + values_read, literal_batch);
+      DCHECK_EQ(actual_read, literal_batch);
+      literal_count_ -= literal_batch;
+      values_read += literal_batch;
+    } else {
+      if (!NextCounts<T>()) return values_read;
+    }
+  }
+
+  return values_read;
+}
+
+// TODO TEST ... skip across repeat/literal ranges
+template <typename T>
+inline int RleDecoder::SkipBatch(int batch_size) {
+  DCHECK_GE(bit_width_, 0);
+  int values_read = 0;
+
+  while (values_read < batch_size) {
+    if (repeat_count_ > 0) {
+      int repeat_batch =
+          std::min(batch_size - values_read, static_cast<int>(repeat_count_));
+      repeat_count_ -= repeat_batch;
+      values_read += repeat_batch;
+    } else if (literal_count_ > 0) {
+      int literal_batch =
+          std::min(batch_size - values_read, static_cast<int>(literal_count_));
+      int actual_read = bit_reader_.SkipBatch<T>(bit_width_, literal_batch);
       DCHECK_EQ(actual_read, literal_batch);
       literal_count_ -= literal_batch;
       values_read += literal_batch;

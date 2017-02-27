@@ -345,6 +345,50 @@ TEST(Rle, BitWidthZeroLiteral) {
   EXPECT_FALSE(decoder.Get(&val));
 }
 
+TEST(Rle, SkipBatch) {
+  int num_values = 100;
+  int len = 1024;
+  uint8_t buffer[len];
+  uint32_t values[num_values];
+  uint32_t values_read[num_values];
+  int bit_width = 7;
+
+  // A repeat sequence, then a literal sequence, then a repeat sequence
+  for (int i = 0; i < num_values / 3; ++i) {
+    values[i] = 55;
+  }
+  for (int i = num_values / 3; i < 2 * num_values / 3; ++i) {
+    values[i] = i;
+  }
+  for (int i = 2 * num_values / 3; i < num_values; ++i) {
+    values[i] = 66;
+  }
+
+  RleEncoder encoder(buffer, len, bit_width);
+  for (int i = 0; i < num_values; ++i) {
+    encoder.Put(values[i]);
+  }
+  encoder.Flush();
+
+  // Call SkipBatch across all combinations of boundaries between "repeat" and "literal"
+  for (int offset = 0; offset < num_values; ++offset) {
+    for (int skip = 0; skip <= num_values - offset; ++skip) {
+      int rest = num_values - skip - offset;
+      RleDecoder decoder(buffer, len, bit_width);
+      decoder.GetBatch(values_read, offset);
+      decoder.SkipBatch<uint32_t>(skip);
+
+      int num_read = decoder.GetBatch(values_read, rest);
+      ASSERT_EQ(rest, num_read);
+
+      for (int i = num_values - rest; i < num_values; ++i) {
+        ASSERT_EQ(values[i], values_read[i - skip - offset])
+            << "offset=" << offset << " skip=" << skip << " i=" << i;
+      }
+    }
+  }
+}
+
 // Test that writes out a repeated group and then a literal
 // group but flush before finishing.
 TEST(BitRle, Flush) {

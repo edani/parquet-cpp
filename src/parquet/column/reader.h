@@ -122,6 +122,8 @@ class PARQUET_EXPORT TypedColumnReader : public ColumnReader {
   // This is only safe if you know through some other source that there are no
   // undefined values.
   //
+  // If "values" is null, the batch is still read but the values are discarded.
+  //
   // To fully exhaust a row group, you must read batches until the number of
   // values read reaches the number of stored values according to the metadata.
   //
@@ -185,6 +187,11 @@ class PARQUET_EXPORT TypedColumnReader : public ColumnReader {
   // @returns: the number of values read into the out buffer
   int64_t ReadValues(int64_t batch_size, T* out);
 
+  // Skip up to batch_size values from the current data page.
+  //
+  // @returns: the number of values kipped
+  int64_t SkipValues(int64_t batch_size);
+
   // Read up to batch_size values from the current data page into the
   // pre-allocated memory T*, leaving spaces for null entries according
   // to the def_levels.
@@ -206,6 +213,12 @@ class PARQUET_EXPORT TypedColumnReader : public ColumnReader {
 template <typename DType>
 inline int64_t TypedColumnReader<DType>::ReadValues(int64_t batch_size, T* out) {
   int64_t num_decoded = current_decoder_->Decode(out, batch_size);
+  return num_decoded;
+}
+
+template <typename DType>
+inline int64_t TypedColumnReader<DType>::SkipValues(int64_t batch_size) {
+  int64_t num_decoded = current_decoder_->Skip(batch_size);
   return num_decoded;
 }
 
@@ -255,7 +268,11 @@ inline int64_t TypedColumnReader<DType>::ReadBatch(int batch_size, int16_t* def_
     }
   }
 
-  *values_read = ReadValues(values_to_read, values);
+  if (values) {
+    *values_read = ReadValues(values_to_read, values);
+  } else {
+    *values_read = SkipValues(values_to_read);
+  }
   int64_t total_values = std::max(num_def_levels, *values_read);
   num_decoded_values_ += total_values;
 
@@ -373,20 +390,14 @@ inline int64_t TypedColumnReader<DType>::Skip(int64_t num_rows_to_skip) {
       int64_t batch_size = 1024;  // ReadBatch with a smaller memory footprint
       int64_t values_read = 0;
 
-      std::shared_ptr<PoolBuffer> vals = AllocateBuffer(
-          this->pool_, batch_size * type_traits<DType::type_num>::value_byte_size);
       std::shared_ptr<PoolBuffer> def_levels =
-          AllocateBuffer(this->pool_, batch_size * sizeof(int16_t));
-
-      std::shared_ptr<PoolBuffer> rep_levels =
           AllocateBuffer(this->pool_, batch_size * sizeof(int16_t));
 
       do {
         batch_size = std::min(batch_size, rows_to_skip);
         values_read =
             ReadBatch(batch_size, reinterpret_cast<int16_t*>(def_levels->mutable_data()),
-                reinterpret_cast<int16_t*>(rep_levels->mutable_data()),
-                reinterpret_cast<T*>(vals->mutable_data()), &values_read);
+                NULL, NULL, &values_read);
         rows_to_skip -= values_read;
       } while (values_read > 0 && rows_to_skip > 0);
     }

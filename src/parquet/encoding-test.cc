@@ -172,6 +172,8 @@ class TestEncodingBase : public ::testing::Test {
 
   virtual void CheckRoundtrip() = 0;
 
+  virtual void CheckSkip(int skip_offset, int skip_length) = 0;
+
   void Execute(int nvalues, int repeats) {
     InitData(nvalues, repeats);
     CheckRoundtrip();
@@ -224,6 +226,33 @@ class TestPlainEncoding : public TestEncodingBase<Type> {
     VerifyResults<T>(decode_buf_, draws_, num_values_);
   }
 
+  void CheckSkip(int skip_offset, int skip_length) {
+    if (skip_offset > num_values_) { throw std::runtime_error("skip_offset too large"); }
+    if (skip_offset + skip_length > num_values_) {
+      throw std::runtime_error("skip_length too large");
+    }
+
+    PlainEncoder<Type> encoder(descr_.get());
+    PlainDecoder<Type> decoder(descr_.get());
+    encoder.Put(draws_, num_values_);
+    encode_buffer_ = encoder.FlushValues();
+
+    decoder.SetData(num_values_, encode_buffer_->data(), encode_buffer_->size());
+
+    int values_decoded = decoder.Decode(decode_buf_, skip_offset);
+    ASSERT_EQ(skip_offset, values_decoded);
+
+    values_decoded = decoder.Skip(skip_length);
+    ASSERT_EQ(skip_length, values_decoded);
+
+    values_decoded = decoder.Decode(decode_buf_ + skip_offset, num_values_);
+    ASSERT_EQ(num_values_ - skip_offset - skip_length, values_decoded);
+
+    VerifyResults<T>(decode_buf_, draws_, skip_offset);
+    VerifyResults<T>(decode_buf_ + skip_offset, draws_ + skip_offset + skip_length,
+        num_values_ - skip_offset - skip_length);
+  }
+
  protected:
   USING_BASE_MEMBERS();
 };
@@ -232,6 +261,16 @@ TYPED_TEST_CASE(TestPlainEncoding, ParquetTypes);
 
 TYPED_TEST(TestPlainEncoding, BasicRoundTrip) {
   this->Execute(10000, 1);
+}
+
+TYPED_TEST(TestPlainEncoding, Skip) {
+  int nvalues = 10000;
+  int repeats = 1;
+  this->InitData(nvalues, repeats);
+  int skip_length = nvalues * repeats / 3;
+  this->CheckSkip(0, skip_length);
+  this->CheckSkip(skip_length, skip_length);
+  this->CheckSkip(nvalues * repeats - skip_length, skip_length);
 }
 
 // ----------------------------------------------------------------------
@@ -286,6 +325,35 @@ class TestDictionaryEncoding : public TestEncodingBase<Type> {
     VerifyResults<T>(decode_buf_, draws_, num_values_);
   }
 
+  void CheckSkip(int skip_offset, int skip_length) {
+    DictEncoder<Type> encoder(descr_.get(), &pool_);
+    encoder.Put(draws_, num_values_);
+    dict_buffer_ = AllocateBuffer(default_memory_pool(), encoder.dict_encoded_size());
+    encoder.WriteDict(dict_buffer_->mutable_data());
+    std::shared_ptr<Buffer> indices = encoder.FlushValues();
+
+    PlainDecoder<Type> dict_decoder(descr_.get());
+    dict_decoder.SetData(
+        encoder.num_entries(), dict_buffer_->data(), dict_buffer_->size());
+
+    DictionaryDecoder<Type> decoder(descr_.get());
+    decoder.SetDict(&dict_decoder);
+    decoder.SetData(num_values_, indices->data(), indices->size());
+
+    int values_decoded = decoder.Decode(decode_buf_, skip_offset);
+    ASSERT_EQ(skip_offset, values_decoded);
+
+    values_decoded = decoder.Skip(skip_length);
+    ASSERT_EQ(skip_length, values_decoded);
+
+    values_decoded = decoder.Decode(decode_buf_ + skip_offset, num_values_);
+    ASSERT_EQ(num_values_ - skip_offset - skip_length, values_decoded);
+
+    VerifyResults<T>(decode_buf_, draws_, skip_offset);
+    VerifyResults<T>(decode_buf_ + skip_offset, draws_ + skip_offset + skip_length,
+        num_values_ - skip_offset - skip_length);
+  }
+
  protected:
   USING_BASE_MEMBERS();
   std::shared_ptr<PoolBuffer> dict_buffer_;
@@ -295,6 +363,16 @@ TYPED_TEST_CASE(TestDictionaryEncoding, DictEncodedTypes);
 
 TYPED_TEST(TestDictionaryEncoding, BasicRoundTrip) {
   this->Execute(2500, 2);
+}
+
+TYPED_TEST(TestDictionaryEncoding, Skip) {
+  int nvalues = 2500;
+  int repeats = 2;
+  this->InitData(nvalues, repeats);
+  int skip_length = nvalues * repeats / 3;
+  this->CheckSkip(0, skip_length);
+  this->CheckSkip(skip_length, skip_length);
+  this->CheckSkip(nvalues * repeats - skip_length, skip_length);
 }
 
 TEST(TestDictionaryEncoding, CannotDictDecodeBoolean) {

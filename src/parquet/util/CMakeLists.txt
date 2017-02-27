@@ -65,6 +65,7 @@ if (PARQUET_BUILD_BENCHMARKS)
   endif()
 endif()
 
+ADD_PARQUET_TEST(bit-stream-utils-test)
 ADD_PARQUET_TEST(bit-util-test)
 ADD_PARQUET_TEST(comparison-test)
 ADD_PARQUET_TEST(memory-test)

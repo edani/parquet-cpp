@@ -183,6 +183,37 @@ inline int BitReader::GetBatch(int num_bits, T* v, int batch_size) {
 }
 
 template <typename T>
+inline int BitReader::SkipBatch(int num_bits, int batch_size) {
+  DCHECK(buffer_ != NULL);
+  // TODO: revisit this limit if necessary
+  DCHECK_LE(num_bits, 32);
+
+  DCHECK_LE(num_bits, static_cast<int>(sizeof(T) * 8));
+
+  uint64_t needed_bits = num_bits * batch_size;
+  uint64_t remaining_bits = (max_bytes_ - byte_offset_) * 8 - bit_offset_;
+  if (remaining_bits < needed_bits) {
+    batch_size = remaining_bits / num_bits;
+    needed_bits = num_bits * batch_size;
+  }
+
+  bit_offset_ += needed_bits;
+  if (bit_offset_ >= 64) {
+    byte_offset_ += (bit_offset_ / 64) * 8;
+    bit_offset_ %= 64;
+
+    int bytes_remaining = max_bytes_ - byte_offset_;
+    if (LIKELY(bytes_remaining >= 8)) {
+      memcpy(&buffered_values_, buffer_ + byte_offset_, 8);
+    } else {
+      memcpy(&buffered_values_, buffer_ + byte_offset_, bytes_remaining);
+    }
+  }
+
+  return batch_size;
+}
+
+template <typename T>
 inline bool BitReader::GetAligned(int num_bytes, T* v) {
   DCHECK_LE(num_bytes, static_cast<int>(sizeof(T)));
   int bytes_read = BitUtil::Ceil(bit_offset_, 8);

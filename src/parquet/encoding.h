@@ -89,11 +89,19 @@ class Decoder {
   virtual void SetData(int num_values, const uint8_t* data, int len) = 0;
 
   // Subclasses should override the ones they support. In each of these functions,
-  // the decoder would decode put to 'max_values', storing the result in 'buffer'.
+  // the decoder would decode up to 'max_values', storing the result in 'buffer'.
   // The function returns the number of values decoded, which should be max_values
   // except for end of the current data page.
   virtual int Decode(T* buffer, int max_values) {
     throw ParquetException("Decoder does not implement this type.");
+  }
+
+  // Subclasses must override this method.
+  // The decoder skips up to 'max_values'.
+  // The function returns the number of values decoded, which should be max_values
+  // except for end of the current data page.
+  virtual int Skip(int max_values) {
+    throw ParquetException("Skip not implemented for this type.");
   }
 
   // Decode the values in this data page but leave spaces for null entries.

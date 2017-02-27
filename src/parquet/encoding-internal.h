@@ -66,6 +66,7 @@ class PlainDecoder : public Decoder<DType> {
   }
 
   virtual int Decode(T* buffer, int max_values);
+  virtual int Skip(int max_values);
 
  private:
   using Decoder<DType>::descr_;
@@ -128,6 +129,51 @@ inline int PlainDecoder<DType>::Decode(T* buffer, int max_values) {
   return max_values;
 }
 
+// Skip routine templated on C++ type rather than type enum
+template <typename T>
+inline int SkipPlain(
+    const uint8_t* data, int64_t data_size, int num_values, int type_length) {
+  int bytes_to_decode = num_values * sizeof(T);
+  if (data_size < bytes_to_decode) { ParquetException::EofException(); }
+  return bytes_to_decode;
+}
+
+// Template specialization for BYTE_ARRAY.
+template <>
+inline int SkipPlain<ByteArray>(
+    const uint8_t* data, int64_t data_size, int num_values, int type_length) {
+  int bytes_decoded = 0;
+  int increment;
+  for (int i = 0; i < num_values; ++i) {
+    uint32_t len = *reinterpret_cast<const uint32_t*>(data);
+    increment = sizeof(uint32_t) + len;
+    if (data_size < increment) ParquetException::EofException();
+    data += increment;
+    data_size -= increment;
+    bytes_decoded += increment;
+  }
+  return bytes_decoded;
+}
+
+// Template specialization for FIXED_LEN_BYTE_ARRAY
+template <>
+inline int SkipPlain<FixedLenByteArray>(
+    const uint8_t* data, int64_t data_size, int num_values, int type_length) {
+  int bytes_to_decode = type_length * num_values;
+  if (data_size < bytes_to_decode) { ParquetException::EofException(); }
+  return bytes_to_decode;
+}
+
+template <typename DType>
+inline int PlainDecoder<DType>::Skip(int max_values) {
+  max_values = std::min(max_values, num_values_);
+  int bytes_consumed = SkipPlain<T>(data_, len_, max_values, type_length_);
+  data_ += bytes_consumed;
+  len_ -= bytes_consumed;
+  num_values_ -= max_values;
+  return max_values;
+}
+
 template <>
 class PlainDecoder<BooleanType> : public Decoder<BooleanType> {
  public:
@@ -154,6 +200,15 @@ class PlainDecoder<BooleanType> : public Decoder<BooleanType> {
   virtual int Decode(bool* buffer, int max_values) {
     max_values = std::min(max_values, num_values_);
     if (bit_reader_.GetBatch(1, buffer, max_values) != max_values) {
+      ParquetException::EofException();
+    }
+    num_values_ -= max_values;
+    return max_values;
+  }
+
+  int Skip(int max_values) override {
+    max_values = std::min(max_values, num_values_);
+    if (bit_reader_.SkipBatch<BooleanType>(1, max_values) != max_values) {
       ParquetException::EofException();
     }
     num_values_ -= max_values;
@@ -330,6 +385,14 @@ class DictionaryDecoder : public Decoder<Type> {
   int Decode(T* buffer, int max_values) override {
     max_values = std::min(max_values, num_values_);
     int decoded_values = idx_decoder_.GetBatchWithDict(dictionary_, buffer, max_values);
+    if (decoded_values != max_values) { ParquetException::EofException(); }
+    num_values_ -= max_values;
+    return max_values;
+  }
+
+  int Skip(int max_values) override {
+    max_values = std::min(max_values, num_values_);
+    int decoded_values = idx_decoder_.SkipBatch<T>(max_values);
     if (decoded_values != max_values) { ParquetException::EofException(); }
     num_values_ -= max_values;
     return max_values;
@@ -762,6 +825,8 @@ class DeltaBitPackDecoder : public Decoder<DType> {
     return GetInternal(buffer, max_values);
   }
 
+  int Skip(int max_values) override { return SkipInternal(max_values); }
+
  private:
   using Decoder<DType>::num_values_;
 
@@ -816,6 +881,19 @@ class DeltaBitPackDecoder : public Decoder<DType> {
     return max_values;
   }
 
+  int SkipInternal(int max_values) {
+    /* Most of the work in this decoder consists of decoding the delta, and
+       this can't be avoided when skipping. So just reuse GetInternal with a small
+       buffer. */
+    T buffer[1024];
+    max_values = std::min(max_values, num_values_);
+    int to_decode = max_values;
+    while (to_decode > 0) {
+      to_decode -= GetInternal(buffer, std::min(to_decode, 1024));
+    }
+    return max_values;
+  }
+
   BitReader decoder_;
   int32_t values_current_block_;
   int32_t num_mini_blocks_;
@@ -857,6 +935,18 @@ class DeltaLengthByteArrayDecoder : public Decoder<ByteArrayType> {
     for (int i = 0; i < max_values; ++i) {
       buffer[i].len = lengths[i];
       buffer[i].ptr = data_;
+      data_ += lengths[i];
+      len_ -= lengths[i];
+    }
+    num_values_ -= max_values;
+    return max_values;
+  }
+
+  int Skip(int max_values) override {
+    max_values = std::min(max_values, num_values_);
+    int lengths[max_values];
+    len_decoder_.Decode(lengths, max_values);
+    for (int i = 0; i < max_values; ++i) {
       data_ += lengths[i];
       len_ -= lengths[i];
     }
@@ -914,6 +1004,14 @@ class DeltaByteArrayDecoder : public Decoder<ByteArrayType> {
     }
     num_values_ -= max_values;
     return max_values;
+  }
+
+  int Skip(int max_values) override {
+    // TODO: The problem is that "Decode" relies on the output buffer to
+    // store the current prefix. It's probably unsafe as it is, and is
+    // definitely bad for Skip since Skip would need to work with temporary
+    // output buffers.
+    throw ParquetException("Skip not implemented for DELTA_BYTE_ARRAY.");
   }
 
  private:
